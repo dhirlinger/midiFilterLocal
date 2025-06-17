@@ -82,7 +82,7 @@ static t_class    *s_midiFilter_class = NULL;
 
 void ext_main(void *r)
 {
-    t_class    *c = class_new("midiFilter",
+    t_class    *c = class_new("midiFilterLocal",
                            (method)midiFilter_new,
                            (method)midiFilter_free,
                            sizeof(t_midiFilter),
