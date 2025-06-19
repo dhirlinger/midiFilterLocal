@@ -10,9 +10,9 @@
 #include "ext_obex.h"
 #include "ext_strings.h"
 #include "ext_common.h"
-#include "ext_systhread.h"
 #include <array>
 #include <vector>
+#include <stdbool.h>
 using namespace std;
 
 
@@ -48,7 +48,7 @@ typedef struct _midiFilter {
     t_object            ob;
     numberVector        *m_localNotes;    // note: you must store this as a pointer and not directly as a member of the object's struct
     numberArrayVector   *m_reassignedNotes;
-    bool                *m_isEmpty;
+    bool                m_isEmpty;
     void                *m_outlet;
     void                *m_outlet2;
     //t_systhread_mutex    m_mutex;
@@ -70,6 +70,8 @@ long    midiFilter_arrayContains(t_midiFilter *x, numberArrayVector &collection,
 void    midiFilter_removeValuesFromArray(t_midiFilter *x, numberArrayVector &collection, long valueToRemove);
 void    midiFilter_version();
 void    midiFilter_printReassigned(t_midiFilter *x);
+void    midiFilter_isEmpty(t_midiFilter *x, t_symbol *msg, long argc, t_atom *argv);
+void    midiFilter_in1(t_midiFilter *x, long status);
 
 
 // globals
@@ -100,6 +102,8 @@ void ext_main(void *r)
     class_addmethod(c, (method)midiFilter_removeValuesFromArray, "int", A_LONG, 0);
     class_addmethod(c, (method)midiFilter_version, "version", 0);
     class_addmethod(c, (method)midiFilter_printReassigned, "printReassigned", 0);
+    class_addmethod(c, (method)midiFilter_isEmpty, "isEmpty", A_GIMME, 0);
+    class_addmethod(c, (method)midiFilter_in1, "in1", A_LONG, 0);
     
 
     class_register(CLASS_BOX, c);
@@ -126,7 +130,8 @@ void *midiFilter_new(t_symbol *s, long argc, t_atom *argv)
         x->m_localNotes->reserve(22);
         x->m_reassignedNotes = new numberArrayVector;
         x->m_reassignedNotes->reserve(220);
-        x->m_isEmpty = 0;
+        x->m_isEmpty = false;
+        intin(x, 1);
     }
     return(x);
 }
@@ -145,8 +150,11 @@ void midiFilter_free(t_midiFilter *x)
 void midiFilter_assist(t_midiFilter *x, void *b, long msg, long arg, char *dst)
 {
     if (msg==1)
-        strcpy(dst, "input");
-    else if (msg==2)
+        if (arg==0){
+            strcpy(dst, "input");
+        } else if (arg==1) {
+            strcpy(dst, "isEmpty");
+        } else if (msg==2)
         strcpy(dst, "output");
 }
 
@@ -206,16 +214,24 @@ void midiFilter_list(t_midiFilter *x, t_symbol *msg, long argc, t_atom *argv)
 {
     //if there's an incoming list
     
-    //systhread_mutex_lock(x->m_mutex);
-    
     if (argc > 0) {
         
         long pitch = atom_getlong(argv);
         long velocity = atom_getlong(argv+1);
         
-        
-        
+        //if is note-on
+        if(velocity > 0) {
+            //if main is empty play note and add pitch to local and main
+            if (x->m_isEmpty==true) {
+                outlet_list(x->m_outlet, NULL, 2, argv);
+                outlet_anything(x->m_outlet2, gensym("addToMain"), 2, argv);
+                x->m_localNotes->push_back(pitch);
+            }
         }
+        
+        
+        
+    }
         
     return;
 }
@@ -412,4 +428,14 @@ void midiFilter_version()
     post("midiFilterLocal object 1.0");
 }
 
-
+// replaces isEmpty method
+void midiFilter_in1(t_midiFilter *x, long status)
+{
+    if(status > 0) {
+        x->m_isEmpty = false;
+    } else {
+        x->m_isEmpty = true;
+    }
+   
+    post("isEmpty: %d", x->m_isEmpty);
+}
