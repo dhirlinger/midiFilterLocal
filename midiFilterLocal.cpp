@@ -48,9 +48,9 @@ typedef struct _midiFilter {
     t_object            ob;
     numberVector        *m_localNotes;    // note: you must store this as a pointer and not directly as a member of the object's struct
     numberArrayVector   *m_reassignedNotes;
-    bool                m_isEmpty;
     void                *m_outlet;
     void                *m_outlet2;
+    void                *m_outlet3;
     //t_systhread_mutex    m_mutex;
 } t_midiFilter;
 
@@ -70,7 +70,6 @@ long    midiFilter_arrayContains(t_midiFilter *x, numberArrayVector &collection,
 void    midiFilter_removeValuesFromArray(t_midiFilter *x, numberArrayVector &collection, long valueToRemove);
 void    midiFilter_version();
 void    midiFilter_printReassigned(t_midiFilter *x);
-void    midiFilter_in1(t_midiFilter *x, long status);
 
 
 // globals
@@ -101,13 +100,11 @@ void ext_main(void *r)
     class_addmethod(c, (method)midiFilter_removeValuesFromArray, "int", A_LONG, 0);
     class_addmethod(c, (method)midiFilter_version, "version", 0);
     class_addmethod(c, (method)midiFilter_printReassigned, "printReassigned", 0);
-    class_addmethod(c, (method)midiFilter_in1, "in1", A_LONG, 0);
     
-
     class_register(CLASS_BOX, c);
     s_midiFilter_class = c;
     
-    post("midiFilterLocal object 1.0");
+    post("midiFilterLocal object 1.1");
 }
 
 
@@ -121,15 +118,14 @@ void *midiFilter_new(t_symbol *s, long argc, t_atom *argv)
     x = (t_midiFilter *)object_alloc(s_midiFilter_class);
     if (x) {
        //systhread_mutex_new(&x->m_mutex, 0);
-        x->m_outlet2 = intout((t_object *)x);
+        x->m_outlet3 = outlet_new(x, NULL);
+        x->m_outlet2 = listout((t_object *)x);
         x->m_outlet = outlet_new(x, NULL);
         midiFilter_list(x, gensym("list"), argc, argv);
         x->m_localNotes = new numberVector;
         x->m_localNotes->reserve(22);
         x->m_reassignedNotes = new numberArrayVector;
         x->m_reassignedNotes->reserve(220);
-        x->m_isEmpty = true;
-        intin(x, 1);
     }
     return(x);
 }
@@ -146,20 +142,18 @@ void midiFilter_free(t_midiFilter *x)
 // Methods bound to input/inlets
 
 void midiFilter_assist(t_midiFilter *x, void *b, long msg, long arg, char *dst)
-{
+{ //msg 1 input, msg 2 output
     if (msg==1){
-        
-        if (arg==0){
-            strcpy(dst, "input");
-        } else if (arg==1) {
-            strcpy(dst, "isEmpty");
-        }
+        strcpy(dst, "input");
         
     } else if (msg==2) {
+        //arg left to right
         if (arg==0) {
             strcpy(dst, "to midiout");
         } else if (arg==1){
-            strcpy(dst, "addToMain");
+            strcpy(dst, "to main");
+        } else if (arg==2){
+            strcpy(dst, "print to screen");
         }
     }
 }
@@ -201,7 +195,7 @@ void midiFilter_printLocalNotes(t_midiFilter *x)
 //        DPOST("about to clear\n", ac);
 //        midiFilter_clear(x);
 
-        outlet_anything(x->m_outlet2, gensym("list"), ac, av); // don't want to call outlets in mutexes either
+        outlet_anything(x->m_outlet3, gensym("local"), ac, av); // don't want to call outlets in mutexes either
 
         delete[] av;
     }
@@ -222,41 +216,49 @@ void midiFilter_list(t_midiFilter *x, t_symbol *msg, long argc, t_atom *argv)
     
     if (argc > 0) {
         
-        long pitch = atom_getlong(argv);
-        long velocity = atom_getlong(argv+1);
+        long pitch = atom_getlong(argv+1);
+        long velocity = atom_getlong(argv+2);
+        long reassignedPitch;
         
         //if is note-on
         if(velocity > 0) {
             
-            //if main is empty play note and add pitch to local and main
-            if (x->m_isEmpty==true) {
+            // refire if note is already in local otherwise
+            if (midiFilter_contains(x, *x->m_localNotes, pitch)){
                 outlet_list(x->m_outlet, NULL, 2, argv);
-                //would outlet_list with a new dedicated outlet be faster?
-                outlet_int(x->m_outlet2, pitch);
-                x->m_localNotes->push_back(pitch);
+                return;
+            }
+            //if pitch makes it through localMath pass to Main.mainMath
+            else if (midiFilter_localMath(x, pitch)) {
+                outlet_list(x->m_outlet2, NULL, 2, argv);
+            }
+            
+        } else if (velocity == 0) {
+            //if reassignedNoters is empty, output note-off and remove from local and main
+            if(x->m_reassignedNotes->size() == 0){
+                outlet_list(x->m_outlet, NULL, 2, argv);
+                outlet_list(x->m_outlet2, NULL, 2, argv);
+                midiFilter_removeValue(x, *x->m_localNotes, pitch);
+              //if not reassigned send note-off and remove from local and main
+            } else if(midiFilter_arrayContains(x, *x->m_reassignedNotes, pitch) == -1){
+                outlet_list(x->m_outlet, NULL, 2, argv);
+                outlet_list(x->m_outlet2, NULL, 2, argv);
+                midiFilter_removeValue(x, *x->m_localNotes, pitch);
+            //if is reassigned send note-off and remove from local, main, and reassigned
+            } else if (midiFilter_arrayContains(x, *x->m_reassignedNotes, pitch) != -1){
                 
-            //if main is not empty..
-            } else if (x->m_isEmpty==false) {
+                reassignedPitch = midiFilter_arrayContains(x, *x->m_reassignedNotes, pitch);
+                atom_setlong(argv, reassignedPitch);
                 
-                // refire if note is already in local and localMath returns a pitch then exit
-                //otherwise localMath returns false and note is dropped
-                if (midiFilter_contains(x, *x->m_localNotes, pitch) && midiFilter_localMath(x, pitch)){
-                    
-                    outlet_list(x->m_outlet, NULL, 2, argv);
-                    
-                    return;
-                    
-                }
+                outlet_list(x->m_outlet, NULL, 2, argv);
+                outlet_list(x->m_outlet2, NULL, 2, argv); //remove from main by sending with vel=0
                 
-                //if pitch makes it through localMath pass to Main.mainMath
-                
+                midiFilter_removeValuesFromArray(x, *x->m_reassignedNotes, pitch);
+                midiFilter_removeValue(x, *x->m_localNotes, reassignedPitch);
+                return;
             }
         }
-        
-        
-        
     }
-        
     return;
 }
 
@@ -441,7 +443,7 @@ void midiFilter_printReassigned(t_midiFilter *x)
             i += 2;
         }
 
-        outlet_anything(x->m_outlet2, gensym("list"), ac, av); // Send list to outlet
+        outlet_anything(x->m_outlet3, gensym("reassigned"), ac, av); // Send list to outlet
 
         delete[] av;
     }
@@ -449,17 +451,7 @@ void midiFilter_printReassigned(t_midiFilter *x)
     
 void midiFilter_version()
 {
-    post("midiFilterLocal object 1.0");
+    post("midiFilterLocal object 1.1");
 }
 
-// replaces isEmpty method
-void midiFilter_in1(t_midiFilter *x, long status)
-{
-    if(status > 0) {
-        x->m_isEmpty = false;
-    } else {
-        x->m_isEmpty = true;
-    }
-   
-    post("isEmpty: %d", x->m_isEmpty);
-}
+
